@@ -1,4 +1,6 @@
+import html
 import re
+
 from aiogram import Bot
 from aiogram.exceptions import TelegramAPIError
 
@@ -15,9 +17,12 @@ from frontend.telegram.messages import (
 )
 
 
-
 class StatusTracker:
     """Edits a single live progress message in the chat as the job advances.
+
+    Messages are sent with Telegram's HTML parse mode and every dynamic value
+    (file name, stage label) is escaped, so a file name such as
+    ``my_file*.pdf`` can no longer break the live message the way Markdown did.
 
     Args:
         bot (Bot): Aiogram Bot instance used for sending and editing messages; no default (required).
@@ -34,6 +39,10 @@ class StatusTracker:
         self.message_id: int | None = None
         self._last_text: str = ""
 
+    def _header(self) -> str:
+        """Return the escaped bold filename line that opens every tracker message."""
+        return f"📄 <b>{html.escape(self.filename)}</b>"
+
     def _build_progress_bar(self, percent: int, width: int = 20) -> str:
         """Assemble a text-based progress bar like ``[████░░░░░░] 40%``.
 
@@ -48,33 +57,37 @@ class StatusTracker:
         bar = "█" * filled + "░" * (width - filled)
         return f"[{bar}] {percent}%"
 
-    def _format_message(self, msg: str) -> str:
+    def _format_message(self, msg: str, percent: int | None = None) -> str:
         """Render one localized stage label into its decorated chat form.
 
         Appends a progress bar when the stage carries a parseable page count
-        (in any active locale form) or an audio-generation percentage, and
-        otherwise picks the most fitting header emoji from bilingual keyword
-        hints (Portuguese and English) so both locales render consistently.
+        (in any active locale form) or an audio-generation percentage, else
+        when the API reported an overall percentage; and picks the most fitting
+        header emoji from bilingual keyword hints (Portuguese and English) so
+        both locales render consistently. The stage text itself always carries
+        the meaning: the emoji is decoration only.
 
         Args:
             msg (str): Localized pipeline stage label received from the job status stream; no default (required).
+            percent (int | None): Overall job progress reported by the API, shown as a bar when the stage carries none (default: None).
 
         Returns:
-            str: Markdown-formatted message with filename header, optional progress bar and localized stage text.
+            str: HTML message with escaped filename header, optional progress bar and escaped stage text.
         """
+        text = html.escape(msg)
         match = re.search(r"(?:pagina|página|page)\s*(\d+)\s*(?:de|of)\s*(\d+)", msg, re.IGNORECASE)
         if match:
             current = int(match.group(1))
             total = int(match.group(2))
-            percent = int((current / total) * 100)
-            bar = self._build_progress_bar(percent)
-            return f"📄 *{self.filename}*\n\n{msg}\n{bar}"
+            page_percent = int((current / total) * 100) if total else 0
+            bar = self._build_progress_bar(page_percent)
+            return f"{self._header()}\n\n{text}\n{bar}"
 
         audio_match = re.search(r"(?:Gerando áudio|spoken audio).*?(\d+)%", msg, re.IGNORECASE)
         if audio_match:
-            percent = int(audio_match.group(1))
-            bar = self._build_progress_bar(percent)
-            return f"📄 *{self.filename}*\n\n{msg}\n{bar}"
+            audio_percent = int(audio_match.group(1))
+            bar = self._build_progress_bar(audio_percent)
+            return f"{self._header()}\n\n{text}\n{bar}"
 
         keywords = {
             "baixando": "⬇️",
@@ -116,21 +129,27 @@ class StatusTracker:
                 header = emoji
                 break
 
-        return f"📄 *{self.filename}*\n\n{header} {msg}"
+        if percent is not None and 0 < percent <= 100:
+            return f"{self._header()}\n\n{header} {text}\n{self._build_progress_bar(percent)}"
+        return f"{self._header()}\n\n{header} {text}"
 
-    async def __call__(self, msg: str) -> None:
+    async def __call__(self, msg: str, percent: int | None = None) -> None:
         """Send the progress message once, or edit it in place for later stage updates.
 
         Args:
             msg (str): Localized stage label to surface in the live message; no default (required).
+            percent (int | None): Overall job progress from the API, or None when unknown (default: None).
         """
-        text = self._format_message(msg)
+        text = self._format_message(msg, percent)
+        if self.message_id is not None and text == self._last_text:
+            # Telegram rejects an edit that changes nothing.
+            return
         self._last_text = text
 
         if self.message_id is None:
             try:
                 sent = await self.bot.send_message(
-                    self.chat_id, text, parse_mode="Markdown",
+                    self.chat_id, text, parse_mode="HTML",
                     message_thread_id=self.message_thread_id,
                 )
                 self.message_id = sent.message_id
@@ -140,7 +159,7 @@ class StatusTracker:
                 )
                 try:
                     sent = await self.bot.send_message(
-                        self.chat_id, msg,
+                        self.chat_id, html.escape(msg),
                         message_thread_id=self.message_thread_id,
                     )
                     self.message_id = sent.message_id
@@ -152,7 +171,7 @@ class StatusTracker:
                     text,
                     chat_id=self.chat_id,
                     message_id=self.message_id,
-                    parse_mode="Markdown",
+                    parse_mode="HTML",
                 )
             except TelegramAPIError as e:
                 logger.debug(
@@ -171,22 +190,13 @@ class StatusTracker:
         """
         if self.message_id is None:
             return
+        final = t(MSG_STATUS_CONVERSION_DONE) if success else t(MSG_STATUS_PROCESSING_FAILED)
         try:
-            if success:
-                text = (
-                    f"📄 *{self.filename}*\n\n"
-                    f"{t(MSG_STATUS_CONVERSION_DONE)}"
-                )
-            else:
-                text = (
-                    f"📄 *{self.filename}*\n\n"
-                    f"{t(MSG_STATUS_PROCESSING_FAILED)}"
-                )
             await self.bot.edit_message_text(
-                text,
+                f"{self._header()}\n\n{final}",
                 chat_id=self.chat_id,
                 message_id=self.message_id,
-                parse_mode="Markdown",
+                parse_mode="HTML",
             )
         except Exception:
             pass

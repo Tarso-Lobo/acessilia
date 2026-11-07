@@ -1,7 +1,9 @@
+import html
 import shutil
 from datetime import datetime
 
 from aiogram import Router
+from aiogram.dispatcher.event.bases import SkipHandler
 from aiogram.filters import CommandStart, Command, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -12,9 +14,11 @@ from backend.i18n import t
 from backend.log_messages import LOG_TELEGRAM_FEEDBACK_RECEIVED
 from backend.services.cache import clear_cache
 from backend.tools.logger import logger
+from backend.tools.validators import MSG_INVALID_EMAIL_ADDRESS, is_email_address_allowed
 from frontend.clients.api_client import ApiError
 from frontend.clients import default_client
 from frontend.telegram import user_context
+from frontend.telegram.access import is_operator
 from frontend.telegram.middlewares.pause_middleware import get_paused_chats
 from frontend.telegram.messages import (
     MSG_BOT_PAUSED,
@@ -24,32 +28,120 @@ from frontend.telegram.messages import (
     MSG_EMAIL_CONFIGURED,
     MSG_EMAIL_HINT,
     MSG_FEEDBACK_PROMPT,
+    MSG_FEEDBACK_TEXT_REQUIRED,
     MSG_FEEDBACK_THANKS,
     MSG_FORMATS_TEXT,
-    MSG_HELP_TEXT,
+    MSG_HEALTH_ACTIVE_MODEL,
+    MSG_HEALTH_API_ERROR,
+    MSG_HEALTH_API_OFFLINE,
+    MSG_HEALTH_API_STATUS,
     MSG_HEALTH_DISK_FREE,
+    MSG_HEALTH_OVERALL_DEGRADED,
+    MSG_HEALTH_OVERALL_OK,
+    MSG_HEALTH_PROVIDER,
+    MSG_HEALTH_QUEUE,
+    MSG_HEALTH_REACHABLE,
     MSG_HEALTH_TEMP_MISSING,
     MSG_HEALTH_TEMP_OK,
+    MSG_HEALTH_UNKNOWN,
+    MSG_HEALTH_UNREACHABLE,
+    MSG_HELP_TEXT,
     MSG_MODE_BAIXO_ON,
     MSG_MODE_DETAILED_ON,
     MSG_MODE_MEDIO_ON,
     MSG_MODE_NORMAL_ON,
     MSG_MODE_OCR_ON,
     MSG_NO_TASK_REGISTERED,
+    MSG_OPERATOR_ONLY,
     MSG_START_TEXT,
+    MSG_STATE_CANCELLED,
+    MSG_STATE_CANCELLING,
+    MSG_STATE_DONE,
+    MSG_STATE_ERROR,
+    MSG_STATE_PROCESSING,
+    MSG_STATE_QUEUED,
+    MSG_STATE_UNKNOWN,
     MSG_STATUS_SUMMARY,
     MSG_STATUS_TASK_NOT_FOUND,
     MSG_TASK_CANCEL_DONE,
     MSG_TASK_CANCEL_FAILED,
+    MSG_TASK_CANCEL_REQUESTED,
 )
 
 router = Router()
 
 client = default_client
 
+#: Job states reported by the API, with the icon and the localized word /status shows for each (REQ-019).
+_JOB_STATES: dict[str, tuple[str, str]] = {
+    "queued": ("⏳", MSG_STATE_QUEUED),
+    "processing": ("⏳", MSG_STATE_PROCESSING),
+    "cancelling": ("⏳", MSG_STATE_CANCELLING),
+    "done": ("✅", MSG_STATE_DONE),
+    "error": ("❌", MSG_STATE_ERROR),
+    "cancelled": ("🚫", MSG_STATE_CANCELLED),
+}
+
+
+#: Display order of the input extensions; any other configured extension follows alphabetically.
+_INPUT_ORDER = (".pdf", ".docx", ".html", ".png", ".jpg", ".jpeg", ".tiff", ".tif", ".bmp", ".webp")
+
+
+def accepted_inputs() -> str:
+    """List the extensions the service accepts, read from the same setting the API validates against (REQ-020).
+
+    Returns:
+        str: Upper-case extensions joined by commas, e.g. "PDF, DOCX, HTML, PNG".
+    """
+    allowed = {ext.lower() for ext in settings.allowed_extensions}
+    ordered = [ext for ext in _INPUT_ORDER if ext in allowed]
+    ordered += sorted(allowed - set(ordered))
+    return ", ".join(ext.lstrip(".").upper() for ext in ordered)
+
 
 class FeedbackStates(StatesGroup):
     waiting_feedback = State()
+
+
+# Registered before every command so a pending feedback prompt sees the
+# message first: a command or a file ends the prompt and is then handled
+# normally, instead of the chat staying stuck waiting for feedback text.
+@router.message(StateFilter(FeedbackStates.waiting_feedback))
+async def handle_feedback_text(message: Message, state: FSMContext) -> None:
+    """Persist the user's free-text feedback to a local log file and acknowledge it.
+
+    A command, document or photo ends the feedback prompt and goes on to its
+    own handler. Any other reply without text (a sticker, a voice note...) is
+    not recorded: the user is asked for text and the prompt stays open.
+
+    Args:
+        message (Message): Aiogram Message holding the user's feedback text; no default (required).
+        state (FSMContext): AIAGram FSM context that is cleared after the feedback is recorded (no default, aiogram-injected argument).
+    """
+    feedback = (message.text or "").strip()
+    if feedback.startswith("/") or message.document or message.photo:
+        await state.clear()
+        raise SkipHandler()
+    if not feedback:
+        await message.answer(t(MSG_FEEDBACK_TEXT_REQUIRED))
+        return
+
+    user = message.from_user
+    user_info = f"{user.username or user.id}" if user else "unknown"
+
+    logger.info(t(LOG_TELEGRAM_FEEDBACK_RECEIVED).format(
+        user_info=user_info, feedback=feedback
+    ))
+
+    feedback_file = settings.temp_dir / "feedback.txt"
+    feedback_file.parent.mkdir(parents=True, exist_ok=True)
+
+    timestamp = datetime.now().isoformat()
+    with open(feedback_file, "a", encoding="utf-8") as f:
+        f.write(f"[{timestamp}] {user_info}: {feedback}\n")
+
+    await state.clear()
+    await message.answer(t(MSG_FEEDBACK_THANKS))
 
 
 @router.message(Command("email"))
@@ -59,14 +151,17 @@ async def cmd_email(message: Message) -> None:
     Args:
         message (Message): Incoming aiogram ``/email`` command carrying the address argument to store, or none when only the bare command was sent; no default (required).
     """
-    args = message.text.split(maxsplit=1)
+    args = (message.text or "").split(maxsplit=1)
     if len(args) < 2:
         await message.answer(t(MSG_EMAIL_HINT))
         return
 
     email = args[1].strip()
+    if not is_email_address_allowed(email):
+        await message.answer(f"{t(MSG_INVALID_EMAIL_ADDRESS)}\n{t(MSG_EMAIL_HINT)}")
+        return
     user_context.user_emails[user_context.get_user_state_key(message)] = email
-    await message.answer(t(MSG_EMAIL_CONFIGURED).format(email=email))
+    await message.answer(t(MSG_EMAIL_CONFIGURED).format(email=html.escape(email)))
 
 
 @router.message(CommandStart())
@@ -76,7 +171,7 @@ async def cmd_start(message: Message) -> None:
     Args:
         message (Message): Incoming aiogram /start command; no default (required).
     """
-    await message.answer(t(MSG_START_TEXT))
+    await message.answer(t(MSG_START_TEXT).format(inputs=accepted_inputs()))
 
 
 @router.message(Command("ajuda"))
@@ -98,7 +193,7 @@ async def cmd_formats(message: Message) -> None:
     Args:
         message (Message): Incoming aiogram /formatos (or /formats) command; no default (required).
     """
-    await message.answer(t(MSG_FORMATS_TEXT))
+    await message.answer(t(MSG_FORMATS_TEXT).format(inputs=accepted_inputs()))
 
 
 @router.message(Command("ocr"))
@@ -154,6 +249,12 @@ async def cmd_low(message: Message) -> None:
 
 @router.message(Command("normal"))
 async def cmd_normal(message: Message) -> None:
+    """
+    Activate normal mode (the medium default) for the sender's next file in this chat and topic.
+
+    Args:
+        message (Message): Incoming aiogram /normal command; no default (required).
+    """
     user_context.user_modes[user_context.get_user_state_key(message)] = "medio"
     await message.answer(t(MSG_MODE_NORMAL_ON))
 
@@ -161,7 +262,7 @@ async def cmd_normal(message: Message) -> None:
 @router.message(Command("status"))
 async def cmd_status(message: Message) -> None:
     """
-    Show the processing task recorded for the sender in this chat and topic.
+    Show the state, progress and stage of the task recorded for the sender in this chat and topic.
 
     Args:
         message (Message): Incoming aiogram /status command; no default (required).
@@ -176,46 +277,79 @@ async def cmd_status(message: Message) -> None:
         await message.answer(t(MSG_STATUS_TASK_NOT_FOUND).format(status_code=e.status_code))
         return
     pct = int((status.get("progresso") or 0.0) * 100)
-    status_icon = {
-        "queued": "⏳",
-        "processing": "⏳",
-        "done": "✅",
-        "error": "❌",
-        "cancelled": "🚫",
-    }.get(status.get("status", ""), "❓")
+    icon, state = _JOB_STATES.get(status.get("status", ""), ("❓", MSG_STATE_UNKNOWN))
     await message.answer(
         t(MSG_STATUS_SUMMARY).format(
-            icon=status_icon,
-            task_id=task_id,
-            filename=status.get('arquivo', '?'),
+            icon=icon,
+            state=t(state),
+            task_id=html.escape(task_id),
+            filename=html.escape(str(status.get("arquivo") or "?")),
             pct=pct,
-            stage=status.get('etapa_atual','')
+            stage=html.escape(str(status.get("etapa_atual") or "")),
         )
     )
 
 
 @router.message(Command("health"))
 async def cmd_health(message: Message) -> None:
-    checks = []
+    """
+    Report the API, AI provider, model, queue and local-resource checks to an operator (REQ-014, REQ-015).
+
+    The summary line reads "degraded" whenever any check fails, so a failing
+    service is never reported as healthy.
+
+    Args:
+        message (Message): Incoming aiogram /health command; no default (required).
+    """
+    if not is_operator(message):
+        await message.answer(t(MSG_OPERATOR_ONLY))
+        return
+
+    checks: list[str] = []
+    healthy = True
+    unknown = t(MSG_HEALTH_UNKNOWN)
 
     try:
         health = await client.health()
-        api_icon = "✅" if health.get("status") == "ok" else "⚠️"
-        model_icon = "✅" if health.get("model_reachable") else "❌"
-        checks.append(f"{api_icon} API: {health.get('status', 'desconhecido')}")
+        api_ok = health.get("status") == "ok"
+        model_ok = bool(health.get("model_reachable"))
+        healthy = api_ok and model_ok
         checks.append(
-            f"{model_icon} Provedor: {health.get('model_client', 'desconhecido')}"
+            t(MSG_HEALTH_API_STATUS).format(
+                icon="✅" if api_ok else "⚠️",
+                status=html.escape(str(health.get("status") or unknown)),
+            )
         )
-        checks.append(f"🤖 Modelo: {health.get('model_name', 'desconhecido')}")
+        checks.append(
+            t(MSG_HEALTH_PROVIDER).format(
+                icon="✅" if model_ok else "❌",
+                provider=html.escape(str(health.get("model_client") or unknown)),
+                state=t(MSG_HEALTH_REACHABLE if model_ok else MSG_HEALTH_UNREACHABLE),
+            )
+        )
+        checks.append(
+            t(MSG_HEALTH_ACTIVE_MODEL).format(
+                model=html.escape(str(health.get("model_name") or unknown))
+            )
+        )
+        if health.get("queue_size") is not None:
+            checks.append(t(MSG_HEALTH_QUEUE).format(size=health["queue_size"]))
     except ApiError as e:
-        checks.append(f"❌ API: erro {e.status_code} ({e.detail})")
+        healthy = False
+        checks.append(
+            t(MSG_HEALTH_API_ERROR).format(
+                status_code=e.status_code, detail=html.escape(str(e.detail))
+            )
+        )
     except Exception as e:
-        checks.append(f"❌ API: offline ({e})")
+        healthy = False
+        checks.append(t(MSG_HEALTH_API_OFFLINE).format(error=html.escape(str(e))))
 
     temp_dir = settings.temp_dir
     if temp_dir.exists():
         checks.append(t(MSG_HEALTH_TEMP_OK))
     else:
+        healthy = False
         checks.append(t(MSG_HEALTH_TEMP_MISSING))
 
     try:
@@ -225,6 +359,7 @@ async def cmd_health(message: Message) -> None:
     except Exception:
         pass
 
+    checks.append(t(MSG_HEALTH_OVERALL_OK if healthy else MSG_HEALTH_OVERALL_DEGRADED))
     await message.answer("\n".join(checks))
 
 
@@ -232,11 +367,14 @@ async def cmd_health(message: Message) -> None:
 @router.message(Command("clear"))
 async def cmd_limpar(message: Message) -> None:
     """
-    Clear the local cache directory of processed-file artifacts and confirm how many entries were removed.
+    Clear the local cache of processed-file artifacts for an operator and confirm how many entries were removed.
 
     Args:
         message (Message): Incoming aiogram /limpar (or its English alias /clear) command; no default (required).
     """
+    if not is_operator(message):
+        await message.answer(t(MSG_OPERATOR_ONLY))
+        return
     count = await clear_cache()
     await message.answer(t(MSG_CACHE_CLEARED).format(count=count))
 
@@ -246,6 +384,9 @@ async def cmd_limpar(message: Message) -> None:
 async def cmd_cancel(message: Message) -> None:
     """
     Cancel the job tracked for the sender in this chat and topic.
+
+    A job the API still has to stop ("cancelling") stays tracked, so /status
+    keeps working and the upload's own poll reports when it ends.
 
     Args:
         message (Message): Incoming aiogram /cancelar (or its English alias /cancel) command; no default (required).
@@ -259,11 +400,16 @@ async def cmd_cancel(message: Message) -> None:
         result = await client.cancel_job(task_id)
     except ApiError as e:
         await message.answer(
-            t(MSG_TASK_CANCEL_FAILED).format(status_code=e.status_code, detail=e.detail)
+            t(MSG_TASK_CANCEL_FAILED).format(
+                status_code=e.status_code, detail=html.escape(str(e.detail))
+            )
         )
         return
+    cancelled_id = html.escape(str(result.get("task_id", task_id)))
+    if result.get("status") == "cancelling":
+        await message.answer(t(MSG_TASK_CANCEL_REQUESTED).format(task_id=cancelled_id))
+        return
     user_context.user_task_ids.pop(state_key, None)
-    cancelled_id = result.get('task_id', task_id)
     await message.answer(t(MSG_TASK_CANCEL_DONE).format(task_id=cancelled_id))
 
 
@@ -306,30 +452,3 @@ async def cmd_feedback(message: Message, state: FSMContext) -> None:
     """
     await state.set_state(FeedbackStates.waiting_feedback)
     await message.answer(t(MSG_FEEDBACK_PROMPT))
-
-
-@router.message(StateFilter(FeedbackStates.waiting_feedback))
-async def handle_feedback_text(message: Message, state: FSMContext) -> None:
-    """Persist the user's free-text feedback to a local log file and acknowledge it.
-
-    Args:
-        message (Message): Aiogram Message holding the user's feedback text; no default (required).
-        state (FSMContext): AIAGram FSM context that is cleared after the feedback is recorded (no default, aiogram-injected argument).
-    """
-    feedback = message.text or ""
-    user = message.from_user
-    user_info = f"{user.username or user.id}" if user else "unknown"
-
-    logger.info(t(LOG_TELEGRAM_FEEDBACK_RECEIVED).format(
-        user_info=user_info, feedback=feedback
-    ))
-
-    feedback_file = settings.temp_dir / "feedback.txt"
-    feedback_file.parent.mkdir(parents=True, exist_ok=True)
-
-    timestamp = datetime.now().isoformat()
-    with open(feedback_file, "a", encoding="utf-8") as f:
-        f.write(f"[{timestamp}] {user_info}: {feedback}\n")
-
-    await state.clear()
-    await message.answer(t(MSG_FEEDBACK_THANKS))

@@ -407,6 +407,38 @@ from frontend.web.messages import (
     WEB_SUCCESS_QUEUED,
 )
 from frontend.telegram.messages import (
+    MSG_SUBMITTED_WITH_MODE,
+    MSG_MODE_NAME_DETAILED,
+    MSG_MODE_NAME_MEDIUM,
+    MSG_MODE_NAME_LOW,
+    MSG_MODE_NAME_OCR,
+    MSG_FILE_DOWNLOAD_FAILED,
+    MSG_EMAIL_DELIVERY_FAILED,
+    MSG_EMAIL_DELIVERY_UNCONFIRMED,
+    MSG_PACKAGE_CONTENTS,
+    MSG_PACKAGE_OPTIONAL_MISSING,
+    MSG_PACKAGE_WARNINGS,
+    MSG_DONE_WITHOUT_LINK,
+    MSG_STATE_QUEUED,
+    MSG_STATE_PROCESSING,
+    MSG_STATE_CANCELLING,
+    MSG_STATE_DONE,
+    MSG_STATE_ERROR,
+    MSG_STATE_CANCELLED,
+    MSG_STATE_UNKNOWN,
+    MSG_HEALTH_API_STATUS,
+    MSG_HEALTH_API_ERROR,
+    MSG_HEALTH_API_OFFLINE,
+    MSG_HEALTH_PROVIDER,
+    MSG_HEALTH_REACHABLE,
+    MSG_HEALTH_UNREACHABLE,
+    MSG_HEALTH_QUEUE,
+    MSG_HEALTH_UNKNOWN,
+    MSG_HEALTH_OVERALL_OK,
+    MSG_HEALTH_OVERALL_DEGRADED,
+    MSG_OPERATOR_ONLY,
+    MSG_TASK_CANCEL_REQUESTED,
+    MSG_FEEDBACK_TEXT_REQUIRED,
     MSG_ACCESSIBLE_PACKAGE_READY,
     MSG_ACTION_REJECTS_EXECUTION_PARAMETERS,
     MSG_BOT_PAUSED,
@@ -615,6 +647,39 @@ MESSAGES: tuple[str, ...] = (
     MSG_BOT_RESUMED,
     MSG_FEEDBACK_PROMPT,
     MSG_FEEDBACK_THANKS,
+    # Telegram bot replies added with the telegram-bot spec (status states, delivery, health, operator access).
+    MSG_SUBMITTED_WITH_MODE,
+    MSG_MODE_NAME_DETAILED,
+    MSG_MODE_NAME_MEDIUM,
+    MSG_MODE_NAME_LOW,
+    MSG_MODE_NAME_OCR,
+    MSG_FILE_DOWNLOAD_FAILED,
+    MSG_EMAIL_DELIVERY_FAILED,
+    MSG_EMAIL_DELIVERY_UNCONFIRMED,
+    MSG_PACKAGE_CONTENTS,
+    MSG_PACKAGE_OPTIONAL_MISSING,
+    MSG_PACKAGE_WARNINGS,
+    MSG_DONE_WITHOUT_LINK,
+    MSG_STATE_QUEUED,
+    MSG_STATE_PROCESSING,
+    MSG_STATE_CANCELLING,
+    MSG_STATE_DONE,
+    MSG_STATE_ERROR,
+    MSG_STATE_CANCELLED,
+    MSG_STATE_UNKNOWN,
+    MSG_HEALTH_API_STATUS,
+    MSG_HEALTH_API_ERROR,
+    MSG_HEALTH_API_OFFLINE,
+    MSG_HEALTH_PROVIDER,
+    MSG_HEALTH_REACHABLE,
+    MSG_HEALTH_UNREACHABLE,
+    MSG_HEALTH_QUEUE,
+    MSG_HEALTH_UNKNOWN,
+    MSG_HEALTH_OVERALL_OK,
+    MSG_HEALTH_OVERALL_DEGRADED,
+    MSG_OPERATOR_ONLY,
+    MSG_TASK_CANCEL_REQUESTED,
+    MSG_FEEDBACK_TEXT_REQUIRED,
     # Backend API HTTP detail/receipt bodies surfaced verbatim to chat and web clients.
     API_TASK_NOT_FOUND,
     API_CANCEL_STATE_INVALID,
@@ -1063,7 +1128,8 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         MSG_START_TEXT: (
             "Olá! Envie um PDF, imagem ou documento escaneado."
             "\n\nEnviarei de volta uma versão acessível para leitores de tela."
-            "\n\nFormatos aceitos: PDF, PNG, JPG, TIFF, BMP, WEBP"
+            "\n\nFormatos aceitos: {inputs}"
+            "\n\nEnvie /ajuda para ver todos os comandos."
         ),
         MSG_HELP_TEXT: (
             "Comandos disponíveis:"
@@ -1071,34 +1137,38 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
             "\n/start - Iniciar o bot"
             "\n/ajuda ou /help - Mostrar esta mensagem"
             "\n/formatos - Listar formatos de entrada e saída suportados"
-            "\n\n🎨 Modos de Descrição:"
+            "\n\n🎨 Modos de descrição (valem para o seu próximo arquivo):"
             "\n/detalhado - Máximo detalhe: tipografia, cores, layout, posição de elementos"
             "\n/medio - Texto completo + descrição clara de imagens (padrão)"
             "\n/baixo - Foco no conteúdo: texto + descrição concisa (mais rápido)"
             "\n/normal - Equivalente ao /medio"
             "\n/ocr - Apenas extração de texto, sem descrição visual"
+            "\n\n📨 Entrega:"
+            "\n/email voce@exemplo.com - Também enviar por e-mail o resultado do seu próximo arquivo"
             "\n\n⚙️ Controle:"
-            "\n/status - Mostra o andamento da tarefa em processamento"
-            "\n/cancelar - Cancelar tarefa em andamento"
+            "\n/status - Mostrar o estado e o andamento da sua tarefa atual"
+            "\n/cancelar - Cancelar a sua tarefa atual"
             "\n/desativar - Desativar o bot neste chat"
             "\n/ativar - Reativar o bot neste chat"
-            "\n/health - Verificar status do sistema (servidor, modelo, disco)"
             "\n/feedback - Enviar opinião sobre a qualidade do processamento"
+            "\n\n🛠️ Somente operadores:"
+            "\n/health - Verificar a saúde do sistema (API, provedor de IA, modelo, disco)"
+            "\n/limpar - Limpar o cache de processamento"
             "\n\nBasta enviar um arquivo que eu processo automaticamente."
         ),
         MSG_FORMATS_TEXT: (
             "Formatos de entrada aceitos:"
-            "\n• PDF (escaneado ou digital)"
-            "\n• PNG, JPG, JPEG"
-            "\n• TIFF, TIF"
-            "\n• BMP"
-            "\n• WEBP"
-            "\n\nFormatos de saída disponíveis:"
+            "\n• {inputs}"
+            "\n• Fotos enviadas diretamente no Telegram"
+            "\n\nFormatos de saída no pacote acessível:"
             "\n• TXT estruturado"
-            "\n• DOCX acessível"
             "\n• HTML semântico"
-            "\n• Markdown"
-            "\n• PDF pesquisável"
+            "\n• DOCX acessível (opcional)"
+            "\n• PDF/UA etiquetado (opcional)"
+            "\n• Narração em áudio MP3 (opcional)"
+            "\n• ZIP com todos os arquivos gerados"
+            "\n\nOs formatos opcionais só entram no pacote quando são gerados com sucesso;"
+            " a mensagem de conclusão lista o que o seu pacote realmente contém."
         ),
         # Nominal-plan executor diagnostics (backend/core/execution/messages.py): pt-BR mirror preserving the original wording.
         EXE_METHOD_NAME_REQUIRED: "O nome do método não pode ser vazio",
@@ -1158,7 +1228,7 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         MSG_WAITING_IN_QUEUE: "Aguardando na fila... {step}",
         MSG_DOWNLOAD_LINK_EMAILED: "✅ Link de download enviado para {email}!",
         MSG_ACCESSIBLE_PACKAGE_READY: (
-            "✅ Pacote acessível gerado!\n\n📥 Link para download (válido por 7 dias):\n{url}"
+            "✅ Pacote acessível gerado!\n\n📥 Link para download (válido por {days} dias):\n{url}"
         ),
         MSG_PROCESSING_ERROR_GENERIC: "❌ Erro ao processar o arquivo. Tente novamente.",
         MSG_PROCESS_FAILED_BASE: "❌ Erro no processamento.",
@@ -1192,7 +1262,10 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         # /cancel reply when there is nothing to cancel in this chat.
         MSG_CANCEL_NO_TASK: "Nenhuma tarefa ativa neste chat para cancelar.",
         # /status successful summary template; {icon}/{task_id}/{filename}/{pct}/{stage} substituted at call time.
-        MSG_STATUS_SUMMARY: ("{icon} Tarefa `{task_id}` - {filename}\n{pct}% - {stage}"),
+        MSG_STATUS_SUMMARY: (
+            "{icon} {state}\nTarefa: <code>{task_id}</code>\nArquivo: {filename}"
+            "\nProgresso: {pct}%\nEtapa: {stage}"
+        ),
         # /status error reply when the API reports the task as unknown; {status_code} is the rejected HTTP code.
         MSG_STATUS_TASK_NOT_FOUND: "❌ Tarefa não encontrada na API ({status_code}).",
         # Ollama online line from /health; {model_count} is how many local models are loaded.
@@ -1220,7 +1293,7 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         MSG_BOT_RESUMED: "Bot reativado! Envie um documento para começar.",
         # /feedback invitation text; mirrors en_US structure including the example line.
         MSG_FEEDBACK_PROMPT: (
-            "📝 **Enviar Feedback**\n\n"
+            "📝 <b>Enviar Feedback</b>\n\n"
             "Digite sua opinião sobre a qualidade do processamento, sugestões de melhoria ou problemas encontrados.\n\n"
             "Exemplo:\n"
             "“A descrição da imagem ficou ótima mas o texto extraído teve alguns erros.”\n\n"
@@ -1228,6 +1301,56 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         ),
         # Thanks receipt once the user's feedback message has been recorded.
         MSG_FEEDBACK_THANKS: "✅ Feedback recebido! Obrigado pela contribuição.",
+        # Telegram bot replies added with the telegram-bot spec.
+        MSG_SUBMITTED_WITH_MODE: "Modo de descrição: {mode}",
+        MSG_MODE_NAME_DETAILED: "detalhado",
+        MSG_MODE_NAME_MEDIUM: "médio (padrão)",
+        MSG_MODE_NAME_LOW: "baixo",
+        MSG_MODE_NAME_OCR: "OCR (apenas texto)",
+        MSG_FILE_DOWNLOAD_FAILED: (
+            "❌ Não foi possível baixar o seu arquivo do Telegram. Envie-o novamente."
+        ),
+        MSG_EMAIL_DELIVERY_FAILED: (
+            "⚠️ Não foi possível enviar o resultado para {email}. Use o link de download acima."
+        ),
+        MSG_EMAIL_DELIVERY_UNCONFIRMED: (
+            "ℹ️ O envio por e-mail para {email} ainda não foi confirmado. Use o link de download acima."
+        ),
+        MSG_PACKAGE_CONTENTS: "Conteúdo do pacote: {formats}",
+        MSG_PACKAGE_OPTIONAL_MISSING: (
+            "⚠️ Estes formatos opcionais não puderam ser gerados e não estão no pacote: {formats}"
+        ),
+        MSG_PACKAGE_WARNINGS: (
+            "⚠️ O serviço registrou avisos nesta conversão; alguns formatos opcionais podem estar fora do pacote."
+        ),
+        MSG_DONE_WITHOUT_LINK: (
+            "❌ O serviço concluiu a tarefa mas não forneceu um link de download, então o pacote não pode ser entregue. "
+            "Tente novamente."
+        ),
+        MSG_STATE_QUEUED: "Na fila",
+        MSG_STATE_PROCESSING: "Em processamento",
+        MSG_STATE_CANCELLING: "Cancelando",
+        MSG_STATE_DONE: "Concluída",
+        MSG_STATE_ERROR: "Falhou",
+        MSG_STATE_CANCELLED: "Cancelada",
+        MSG_STATE_UNKNOWN: "Estado desconhecido",
+        MSG_HEALTH_API_STATUS: "{icon} API: {status}",
+        MSG_HEALTH_API_ERROR: "❌ API: erro {status_code} ({detail})",
+        MSG_HEALTH_API_OFFLINE: "❌ API: offline ({error})",
+        MSG_HEALTH_PROVIDER: "{icon} Provedor de IA: {provider} ({state})",
+        MSG_HEALTH_REACHABLE: "acessível",
+        MSG_HEALTH_UNREACHABLE: "inacessível",
+        MSG_HEALTH_QUEUE: "📋 Fila: {size} tarefa(s)",
+        MSG_HEALTH_UNKNOWN: "desconhecido",
+        MSG_HEALTH_OVERALL_OK: "Geral: saudável.",
+        MSG_HEALTH_OVERALL_DEGRADED: "Geral: degradado, ao menos uma verificação falhou.",
+        MSG_OPERATOR_ONLY: "⛔ Este comando é restrito aos operadores do bot.",
+        MSG_TASK_CANCEL_REQUESTED: (
+            "⏳ Cancelamento da tarefa {task_id} solicitado. Aviso quando ela parar."
+        ),
+        MSG_FEEDBACK_TEXT_REQUIRED: (
+            "Por favor, envie o seu feedback como mensagem de texto, ou mande qualquer comando para fazer outra coisa."
+        ),
         # Localized variant of the 404 API detail body for jobs task endpoints (surfaces via ApiError.detail).
         API_TASK_NOT_FOUND: "Tarefa não encontrada",
         # 409 API detail body returned by the job cancel endpoint when the task state does not accept cancellation; {status} is substituted at call time.

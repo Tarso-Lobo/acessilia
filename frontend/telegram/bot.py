@@ -12,6 +12,7 @@ from frontend.telegram.handlers.errors import router as error_router
 from backend.tools.logger import setup_logger, logger
 from frontend.telegram.middlewares.locale_middleware import LocaleMiddleware
 from frontend.telegram.middlewares.pause_middleware import PauseMiddleware
+from frontend.telegram.middlewares.retry_middleware import RetryAfterMiddleware
 from backend.i18n import t
 from backend.log_messages import (
     LOG_BOT_INTERRUPTED_BY_USER,
@@ -45,13 +46,18 @@ async def on_shutdown(bot: Bot) -> None:
 def create_bot() -> Bot:
     """Create the aiogram Bot with the configured token and HTML parse-mode defaults.
 
+    Every Bot API request goes through RetryAfterMiddleware, so rate-limit
+    answers are retried within one bounded policy wherever the bot sends.
+
     Returns:
         Bot: Configured aiogram Bot instance; no default (required return).
     """
-    return Bot(
+    bot = Bot(
         token=settings.bot_token,
         default=DefaultBotProperties(parse_mode=ParseMode.HTML),
     )
+    bot.session.middleware(RetryAfterMiddleware())
+    return bot
 
 
 def create_dispatcher() -> Dispatcher:

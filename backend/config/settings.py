@@ -16,6 +16,11 @@ BASE_DIR = Path(__file__).resolve().parent.parent.parent
 @dataclass
 class Settings:
     bot_token: str = field(default_factory=lambda: os.getenv("BOT_TOKEN", ""))
+    # Telegram user ids allowed to run the bot's operator commands (/health,
+    # /clear). Blank means nobody: operator commands stay closed by default.
+    telegram_admin_ids: frozenset[int] = field(
+        default_factory=lambda: _int_ids_from_env(os.getenv("TELEGRAM_ADMIN_IDS", ""))
+    )
     max_file_size_mb: int = field(
         default_factory=lambda: int(os.getenv("MAX_FILE_SIZE_MB", "50"))
     )
@@ -605,6 +610,24 @@ def _str_from_env_alias(env_vars: tuple[str, ...], default: str) -> str:
         if raw_value is not None:
             return raw_value
     return default
+
+
+def _int_ids_from_env(raw_value: str) -> frozenset[int]:
+    """Parse a comma-separated list of numeric ids, skipping blank or invalid entries.
+
+    Args:
+        raw_value (str): Comma-separated ids read from the environment, e.g. TELEGRAM_ADMIN_IDS.
+
+    Returns:
+        frozenset[int]: The ids that parse as integers; empty when none does.
+    """
+    ids: set[int] = set()
+    for entry in raw_value.split(","):
+        try:
+            ids.add(int(entry.strip()))
+        except ValueError:
+            continue
+    return frozenset(ids)
 
 
 def _locales_from_env(raw_value: str) -> tuple[str, ...]:

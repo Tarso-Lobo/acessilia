@@ -12,6 +12,16 @@ from backend.log_messages import LOG_PDF_UA_GENERATION_FAILED
 from frontend.telegram import user_context
 from frontend.telegram.handlers import document as doc_module
 from frontend.telegram.handlers import start as start_module
+from frontend.telegram.messages import (
+    MSG_HEALTH_ACTIVE_MODEL,
+    MSG_HEALTH_API_ERROR,
+    MSG_HEALTH_OVERALL_DEGRADED,
+    MSG_HEALTH_OVERALL_OK,
+    MSG_HEALTH_PROVIDER,
+    MSG_HEALTH_REACHABLE,
+    MSG_PACKAGE_CONTENTS,
+    MSG_PACKAGE_OPTIONAL_MISSING,
+)
 
 BASE = "http://localhost:8000"
 
@@ -169,6 +179,19 @@ def _mock_job_api(status_body: dict, task_id: str = "tg12345"):
     respx.get(f"{BASE}/api/v1/jobs/{task_id}").mock(
         return_value=httpx.Response(200, json=status_body)
     )
+    respx.get(f"{BASE}/api/v1/download/tok123").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "filename": "doc.pdf",
+                "stem": "doc",
+                "formats": [
+                    {"ext": ext, "label": ext.upper(), "size": "1 KB", "url": f"/{ext}"}
+                    for ext in ("txt", "html", "zip")
+                ],
+            },
+        )
+    )
 
 
 def _done_status(task_id: str = "tg12345") -> dict:
@@ -197,7 +220,9 @@ def test_document_flow_sends_download_link(doc_module_isolated, pdf_ua_failed):
         asyncio.run(doc_module_isolated.handle_document(msg))
 
     assert any("http://localhost:8000/api/v1/download/tok123" in s for s in bot.sent)
-    assert any("Não foi possível gerar o PDF/UA" in s for s in bot.sent) == pdf_ua_failed
+    assert any(t(MSG_PACKAGE_CONTENTS).format(formats="TXT, HTML, ZIP") in s for s in bot.sent)
+    missing_pdf_ua = t(MSG_PACKAGE_OPTIONAL_MISSING).format(formats="PDF/UA")
+    assert any(missing_pdf_ua in s for s in bot.sent) == pdf_ua_failed
     assert user_context.user_task_ids[(123, None, 456)] == "tg12345"
 
 
@@ -451,6 +476,7 @@ def test_photo_flow(doc_module_isolated):
 
 def test_health_uses_provider_reported_by_api(monkeypatch, tmp_path):
     monkeypatch.setattr(settings, "temp_dir", tmp_path)
+    monkeypatch.setattr(settings, "telegram_admin_ids", frozenset({456}))
     monkeypatch.setattr(start_module, "client", ApiClient(base_url=BASE))
     message = _FakeMessage(_FakeBot(b""))
     health = {
@@ -468,13 +494,18 @@ def test_health_uses_provider_reported_by_api(monkeypatch, tmp_path):
         asyncio.run(start_module.cmd_health(message))
 
     assert route.called
-    assert "✅ Provedor: openrouter" in message.answers[0]
-    assert "🤖 Modelo: openai/gpt-4.1-mini" in message.answers[0]
+    provider_line = t(MSG_HEALTH_PROVIDER).format(
+        icon="✅", provider="openrouter", state=t(MSG_HEALTH_REACHABLE)
+    )
+    assert provider_line in message.answers[0]
+    assert t(MSG_HEALTH_ACTIVE_MODEL).format(model="openai/gpt-4.1-mini") in message.answers[0]
+    assert t(MSG_HEALTH_OVERALL_OK) in message.answers[0]
     assert "Ollama" not in message.answers[0]
 
 
 def test_health_reports_api_error(monkeypatch, tmp_path):
     monkeypatch.setattr(settings, "temp_dir", tmp_path)
+    monkeypatch.setattr(settings, "telegram_admin_ids", frozenset({456}))
     monkeypatch.setattr(start_module, "client", ApiClient(base_url=BASE))
     message = _FakeMessage(_FakeBot(b""))
 
@@ -484,4 +515,6 @@ def test_health_reports_api_error(monkeypatch, tmp_path):
         )
         asyncio.run(start_module.cmd_health(message))
 
-    assert "❌ API: erro 503 (indisponível)" in message.answers[0]
+    api_error = t(MSG_HEALTH_API_ERROR).format(status_code=503, detail="indisponível")
+    assert api_error in message.answers[0]
+    assert t(MSG_HEALTH_OVERALL_DEGRADED) in message.answers[0]

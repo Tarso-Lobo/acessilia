@@ -5,6 +5,9 @@ table mirroring each msgid for locale catalog generation,
 and a per-locale mapping builder that scripts/gen_locale_catalogs consumes so adding another supported language later only
 requires one additional entry in BOT_PT_TRANSLATIONS-style tables plus re-running catalog generation. Module-level constants
 doube as the single source of truth that frontend/telegram/handlers/start.py formats at runtime through backend.i18n.t().
+
+The bot sends every reply with Telegram's HTML parse mode, so the texts below use HTML tags (never Markdown), and
+callers escape every value they substitute (file names, e-mails, API details, stage labels).
 """
 
 from __future__ import annotations
@@ -15,58 +18,74 @@ MSG_EMAIL_HINT: str = "Please provide an e-mail address: /email you@example.com"
 MSG_EMAIL_CONFIGURED: str = (
     "E-mail {email} configured! Now send your document and it will be delivered to this e-mail address."
 )
-#: Welcome text emitted on /start explaining what the bot does and which formats are accepted.
+#: Welcome text emitted on /start explaining what the bot does; {inputs} is the accepted-extension list from settings.
 MSG_START_TEXT: str = (
     "Hello! Send a PDF, image or scanned document."
     "\n\nYou'll get back an accessible version for screen readers."
-    "\n\nAccepted formats: PDF, PNG, JPG, TIFF, BMP, WEBP"
+    "\n\nAccepted formats: {inputs}"
+    "\n\nSend /help to see every command."
 )
-#: Full catalog of bot commands emitted on /ajuda and /help; command tokens stay localized-independent per Telegram's locale-agnostic slash-command behavior.
+#: Full catalog of bot commands emitted on /ajuda and /help; every section has a text heading so it reads without the emoji.
 MSG_HELP_TEXT: str = (
     "Available commands:"
     "\n\n🔧 General:"
     "\n/start - Start the bot"
     "\n/help - Show this message"
     "\n/formats - List supported input and output formats"
-    "\n\n🎨 Description modes:"
+    "\n\n🎨 Description modes (apply to your next file):"
     "\n/detailed - Maximum detail: typography, colors, layout, element positions"
     "\n/medium - Full text + clear image descriptions (default)"
     "\n/low - Content focused: full text extraction + concise image description (faster)"
     "\n/normal - Equivalent to /medium"
     "\n/ocr - Text extraction only, no visual description"
+    "\n\n📨 Delivery:"
+    "\n/email you@example.com - Also e-mail the result of your next file"
     "\n\n⚙️ Control:"
-    "\n/status - Inspect processing queue and in-progress task progress"
-    "\n/cancel - Cancel a running task"
+    "\n/status - Show the state and progress of your current task"
+    "\n/cancel - Cancel your current task"
     "\n/deactivate - Disable the bot for this chat"
     "\n/activate - Re-enable the bot for this chat"
-    "\n/health - Check system health (server, model, disk)"
     "\n/feedback - Send your opinion about processing quality"
+    "\n\n🛠️ Operators only:"
+    "\n/health - Check system health (API, AI provider, model, disk)"
+    "\n/clear - Clear the processing cache"
     "\n\nJust send a file and I'll process it automatically."
 )
-#: /formatos answer listing accepted input containers plus every generated output format.
+#: /formatos answer; {inputs} is the accepted-extension list from settings (what the API validates against), then
+#: every output the service actually puts in the package
+#: (backend/api/worker.py: TXT and HTML always; DOCX, PDF/UA and MP3 when their optional export succeeds; a ZIP of all).
 MSG_FORMATS_TEXT: str = (
     "Accepted input formats:"
-    "\n• PDF (scanned or digital)"
-    "\n• PNG, JPG, JPEG"
-    "\n• TIFF, TIF"
-    "\n• BMP"
-    "\n• WEBP"
+    "\n• {inputs}"
+    "\n• Photos sent directly in Telegram"
     "\n\n"
-    "Output formats available:"
+    "Output formats in the accessible package:"
     "\n• Structured TXT"
-    "\n• Accessible DOCX"
     "\n• Semantic HTML"
-    "\n• Markdown"
-    "\n• Searchable PDF"
- )
+    "\n• Accessible DOCX (optional)"
+    "\n• Tagged PDF/UA (optional)"
+    "\n• MP3 audio narration (optional)"
+    "\n• ZIP with every generated file"
+    "\n\nOptional formats are only included when they are generated successfully;"
+    " the completion message lists what your package actually contains."
+)
 
 # --- File/photo processing lifecycle messages (frontend/telegram/handlers/document.py) ---
 #: Confirmation shown right after the user sends a document file.
 MSG_FILE_RECEIVED: str = "📄 File received!"
 #: Confirmation shown right after the user sends a photo.
 MSG_PHOTO_RECEIVED: str = "📷 Photo received!"
+#: Line appended to the receipt naming the description mode the file is submitted with; {mode} is a localized mode name.
+MSG_SUBMITTED_WITH_MODE: str = "Description mode: {mode}"
+#: Localized description-mode names substituted into MSG_SUBMITTED_WITH_MODE.
+MSG_MODE_NAME_DETAILED: str = "detailed"
+MSG_MODE_NAME_MEDIUM: str = "medium (default)"
+MSG_MODE_NAME_LOW: str = "low"
+MSG_MODE_NAME_OCR: str = "OCR (text only)"
 #: Progress line emitted while the bot downloads the attachment from Telegram servers into local storage.
 MSG_DOWNLOADING_FILE: str = "Downloading file..."
+#: Error reply when Telegram does not hand the uploaded file over (missing, expired or unreadable upload).
+MSG_FILE_DOWNLOAD_FAILED: str = "❌ Could not download your file from Telegram. Please send it again."
 #: Error reply returned when the processing API rejects the submitted job; {status_code}/{detail} substituted at call time.
 MSG_SUBMIT_FAILED: str = (
     "❌ Error submitting the file for processing ({status_code}): {detail}"
@@ -81,9 +100,32 @@ MSG_QUEUE_POSITION: str = "⏳ You are in the queue (Position: {position})."
 MSG_WAITING_IN_QUEUE: str = "Waiting in queue... {step}"
 #: Receipt emitted when the download link has also been e-mailed to the address stored via /email; {email} substituted at call time.
 MSG_DOWNLOAD_LINK_EMAILED: str = "✅ Download link sent to {email}!"
-#: Completion reply carrying the 7-day download URL; {url} is appended by the caller after lookup and locale selection so each language can localize surrounding wording independently.
+#: Notice emitted when the service reports that e-mailing the result failed; {email} substituted at call time.
+MSG_EMAIL_DELIVERY_FAILED: str = (
+    "⚠️ Could not e-mail the result to {email}. Use the download link above."
+)
+#: Notice emitted when the service has not confirmed the e-mail delivery within the bot's wait; {email} substituted at call time.
+MSG_EMAIL_DELIVERY_UNCONFIRMED: str = (
+    "ℹ️ E-mail delivery to {email} has not been confirmed yet. Use the download link above."
+)
+#: Completion reply carrying the download URL; {days} is the link validity and {url} the link itself.
 MSG_ACCESSIBLE_PACKAGE_READY: str = (
-    "✅ Accessible package generated!\n\n📥 Download link (valid for 7 days):\n{url}"
+    "✅ Accessible package generated!\n\n📥 Download link (valid for {days} days):\n{url}"
+)
+#: Line appended to the completion reply listing the formats the package really holds; {formats} is a comma-separated list.
+MSG_PACKAGE_CONTENTS: str = "Package contents: {formats}"
+#: Warning appended when optional exports failed; {formats} names the missing formats (e.g. "PDF/UA, MP3").
+MSG_PACKAGE_OPTIONAL_MISSING: str = (
+    "⚠️ These optional formats could not be generated and are not in the package: {formats}"
+)
+#: Warning appended when the service reported warnings the bot cannot map to a specific format.
+MSG_PACKAGE_WARNINGS: str = (
+    "⚠️ The service reported warnings for this conversion; some optional formats may be missing from the package."
+)
+#: Reply when the service marks a job as done but provides no download link, so nothing can be delivered.
+MSG_DONE_WITHOUT_LINK: str = (
+    "❌ The service finished the task but did not provide a download link, so the package cannot be delivered. "
+    "Please try again."
 )
 #: Generic error reply returned when an unexpected exception interrupts file processing mid-flight.
 MSG_PROCESSING_ERROR_GENERIC: str = "❌ Error processing the file. Try again."
@@ -122,8 +164,19 @@ MSG_MODE_NORMAL_ON: str = (
 MSG_NO_TASK_REGISTERED: str = "No task registered in this chat yet."
 #: Status error reply; {status_code} is the rejected HTTP code.
 MSG_STATUS_TASK_NOT_FOUND: str = "❌ Task not found in API ({status_code})."
-#: Successful status summary template for /status rendering; {icon} maps to queued/processing/done/error/canceled states; {task_id}, {filename}, {pct}/{stage} are fetched from the API response.
-MSG_STATUS_SUMMARY: str = ("{icon} Task `{task_id}` - {filename}\n{pct}% - {stage}")
+#: Successful status summary for /status; {state} is a localized state word so the reply never depends on {icon} alone;
+#: {task_id}, {filename}, {pct} and {stage} come from the API response.
+MSG_STATUS_SUMMARY: str = (
+    "{icon} {state}\nTask: <code>{task_id}</code>\nFile: {filename}\nProgress: {pct}%\nStage: {stage}"
+)
+#: Localized job-state words used by /status (REQ-019: state is readable without the emoji).
+MSG_STATE_QUEUED: str = "Queued"
+MSG_STATE_PROCESSING: str = "Processing"
+MSG_STATE_CANCELLING: str = "Cancelling"
+MSG_STATE_DONE: str = "Completed"
+MSG_STATE_ERROR: str = "Failed"
+MSG_STATE_CANCELLED: str = "Cancelled"
+MSG_STATE_UNKNOWN: str = "Unknown state"
 #: Health check line for Ollama online state; {model_count} is the number of locally loaded models.
 MSG_OLLAMA_ONLINE: str = "✅ Ollama: online ({model_count} model(s))"
 #: Health warning when Ollama answered off nominal HTTP 200; {code} substituted at call time with observed code.
@@ -132,6 +185,25 @@ MSG_OLLAMA_UNEXPECTED: str = "⚠️ Ollama: unexpected answer ({code})"
 MSG_OLLAMA_OFFLINE: str = "❌ Ollama: offline ({error})"
 #: Health check line stating which llm model is active; {model} substituted at call time.
 MSG_HEALTH_ACTIVE_MODEL: str = "🤖 Model: {model}"
+#: Health line for the API itself; {icon} and {status} come from the API's /health answer.
+MSG_HEALTH_API_STATUS: str = "{icon} API: {status}"
+#: Health line when the API answered /health with an HTTP error; {status_code}/{detail} substituted at call time.
+MSG_HEALTH_API_ERROR: str = "❌ API: error {status_code} ({detail})"
+#: Health line when the API could not be reached at all; {error} is the connection error text.
+MSG_HEALTH_API_OFFLINE: str = "❌ API: offline ({error})"
+#: Health line for the AI provider; {provider} is the configured client and {state} a localized reachability word.
+MSG_HEALTH_PROVIDER: str = "{icon} AI provider: {provider} ({state})"
+#: Reachability words for MSG_HEALTH_PROVIDER.
+MSG_HEALTH_REACHABLE: str = "reachable"
+MSG_HEALTH_UNREACHABLE: str = "unreachable"
+#: Health line with the API's queue length; {size} substituted at call time.
+MSG_HEALTH_QUEUE: str = "📋 Queue: {size} job(s)"
+#: Value shown when the API omits a health field.
+MSG_HEALTH_UNKNOWN: str = "unknown"
+#: Health summary when every check passed.
+MSG_HEALTH_OVERALL_OK: str = "Overall: healthy."
+#: Health summary when at least one check failed, so the reply never reads as healthy.
+MSG_HEALTH_OVERALL_DEGRADED: str = "Overall: degraded, at least one check failed."
 #: Temp directory health probe result when the settings.temp_dir path exists.
 MSG_HEALTH_TEMP_OK: str = "✅ Temp dir: ok"
 #: Temp directory health probe notice when the settings.temp_dir path does not exist.
@@ -146,6 +218,8 @@ MSG_STATUS_PROCESSING_FAILED: str = ("❌ Error during processing.")
 
 #: Cache cleared reply; {count} is the number of files deleted from cache storage.
 MSG_CACHE_CLEARED: str = ("🧹 Cache cleared! {count} file(s) removed.")
+#: Reply to /health or /clear from a user who is not listed in TELEGRAM_ADMIN_IDS.
+MSG_OPERATOR_ONLY: str = "⛔ This command is restricted to the bot operators."
 #: Disk free space probe line; {free_gb} is formatted at call time with one decimal.
 MSG_HEALTH_DISK_FREE: str = "💾 Free disk: {free_gb:.1f} GB"
 #: /status reply when the chat has no recorded processing task yet.
@@ -154,6 +228,10 @@ MSG_STATUS_NO_TASK: str = "No task in this chat."
 MSG_CANCEL_NO_TASK: str = "No active task in this chat to cancel."
 #: Reply emitted after a successful job cancellation; {task_id} substituted at call time with the cancelled job's id.
 MSG_TASK_CANCEL_DONE: str = "✅ Task {task_id} cancelled."
+#: Reply when the API accepted the cancellation but the running job still has to stop; {task_id} substituted at call time.
+MSG_TASK_CANCEL_REQUESTED: str = (
+    "⏳ Cancellation of task {task_id} requested. I'll let you know when it stops."
+)
 #: /cancelar error reply when the API rejects the cancellation request; {status_code}/{detail} are the API response fields, substituted at call time.
 MSG_TASK_CANCEL_FAILED: str = ("❌ Could not cancel the task ({status_code}): {detail}")
 #: Reply shown by /deactivate confirming the bot is paused for this chat.
@@ -162,11 +240,15 @@ MSG_BOT_PAUSED: str = "Bot disabled in this chat. Use /activate to re-enable it.
 MSG_BOT_RESUMED: str = ("Bot re-enabled! Send me a document to get started.")
 #: Prompt text emitted when the user invokes /feedback, instructing them how to write their opinion of processing quality before entering input state.
 MSG_FEEDBACK_PROMPT: str = (
-    "📝 **Send Feedback**\n\n"
+    "📝 <b>Send Feedback</b>\n\n"
     "Type your opinion on processing quality, improvement suggestions or issues you encountered.\n\n"
     "Example:\n"
     '\"The image description came out great but the extracted text had a few errors."\n\n'
     "Your feedback is very important to us!"
+)
+#: Reply when the user answers the feedback prompt with something other than text (a file, a sticker...).
+MSG_FEEDBACK_TEXT_REQUIRED: str = (
+    "Please send your feedback as a text message, or send any command to do something else."
 )
 #: Confirmation emitted once the user's feedback message has been recorded and logged; thanks them for contributing.
 MSG_FEEDBACK_THANKS: str = ("✅ Feedback received! Thanks for your contribution.")
